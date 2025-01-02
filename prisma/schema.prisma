@@ -1,0 +1,21 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Agent {
+  id         Int      @id @default(autoincrement())
+  name       String
+  role       String // "mentor" or "mentee"
+  experience Int      @default(0)
+  mentorId   Int? // optional link to a mentor
+  mentor     Agent?   @relation("Mentorship", fields: [mentorId], references: [id]) // Mentor relation
+  mentees    Agent[]  @relation("Mentorship") // Reverse relation for mentees
+  knowledge  String? // JSON or text field for storing local knowledge
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}

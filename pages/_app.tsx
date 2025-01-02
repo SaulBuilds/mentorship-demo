@@ -1,6 +1,14 @@
-import "@/styles/globals.css";
-import type { AppProps } from "next/app";
+// pages/_app.tsx
+import React from "react";
 
-export default function App({ Component, pageProps }: AppProps) {
-  return <Component {...pageProps} />;
+import HomePage from ".";
+
+function App() {
+  return (
+    <div style={{ height: "100vh" }}>
+      <HomePage />
+    </div>
+  );
 }
+
+export default App;
