@@ -1,16 +1,14 @@
+/* eslint-disable @typescript-eslint/ban-ts-comment */
+/////////////////////////
+// ab-test.ts (excerpt)
+/////////////////////////
+
 import { ChatOpenAI } from "@langchain/openai";
 import { BaseMessage, HumanMessage } from "@langchain/core/messages";
 import { Runnable, RunnableConfig } from "@langchain/core/runnables";
 import { StateGraph } from "@langchain/langgraph";
-import { AgentEntity } from "@/lib/agent"; // if you want to use your agent
+import { AgentEntity } from "@/lib/agent";
 import { CentralOracle } from "@/lib/oracle";
-
-/** 
- * Optional: Decide if we use an "oracle" or not
- */
-export function OracleOrNoOracle(): boolean {
-  return false;
-}
 
 /** 
  * aggregator channels for “messages”
@@ -23,14 +21,14 @@ const channels = {
 };
 
 /** 
- * Workflow's state shape
+ * Workflow state
  */
 export interface GraphState {
   messages: BaseMessage[];
 }
 
 /** 
- * Extra config to see if "mentor" is enabled or not
+ * Additional config
  */
 export interface ABTestConfig extends RunnableConfig {
   isMentor?: boolean;
@@ -38,138 +36,157 @@ export interface ABTestConfig extends RunnableConfig {
 
 /** 
  * 1) MentorCheckNode
- *    - If isMentor is true, prepend a "mentor" message
+ *    - Dynamically crafts a “mentor” prompt referencing the agent or oracle
  */
 class MentorCheckNode extends Runnable<GraphState, Partial<GraphState>, ABTestConfig> {
   public lc_namespace = ["MentorCheckNode"];
 
-  async invoke(
-    state: GraphState,
-    config?: ABTestConfig
-  ): Promise<Partial<GraphState>> {
+  async invoke(state: GraphState, config?: ABTestConfig): Promise<Partial<GraphState>> {
     const isMentor = config?.isMentor ?? false;
     console.log("[MentorCheckNode] isMentor =", isMentor);
 
-    if (isMentor) {
-      // If mentor is on, we add a special mentor message
-      const mentorPrompt = new HumanMessage("Mentor: Provide guidance for a technical task.");
-      return { messages: [mentorPrompt] };
-    } else {
-      // If no mentor, do nothing. Return an empty partial.
+    if (!isMentor) {
+      // no mentor, do nothing
       return {};
     }
+
+    // Example usage of AgentEntity for a “mentor” agent
+    // Possibly fetched from DB in real code
+    const mentorAgent = new AgentEntity(100, "SeniorDev", "mentor", 20);
+    mentorAgent.shareKnowledgeWithOracle("mentorTips", "Always test code thoroughly.");
+
+    const oracle = CentralOracle.getInstance();
+    const mentorTips = oracle.getKnowledge("mentorTips") || "No mentor tips yet.";
+
+    // Combine aggregator's last message (if any) with mentor tips
+    const lastUserMsg = state.messages.length > 0 
+      ? state.messages[state.messages.length - 1].text 
+      : "No prior user message";
+
+    // Construct a more advanced “mentor” prompt
+    const mentorPromptText = `
+      Mentor: Provide guidance based on these tips: ${mentorTips}.
+      The user previously said: "${lastUserMsg}".
+      Please give them step-by-step mentorship.
+    `.trim();
+
+    const mentorPrompt = new HumanMessage(mentorPromptText);
+
+    return { messages: [mentorPrompt] };
   }
 }
 
-/** 
+/**
  * 2) OracleCheckNode
- *    - Possibly read or update the Oracle with knowledge
+ *    - Dynamically checks the aggregator for relevant context
+ *    - Reads/writes to the Oracle
  */
 class OracleCheckNode extends Runnable<GraphState, Partial<GraphState>, ABTestConfig> {
   public lc_namespace = ["OracleCheckNode"];
 
-  async invoke(
-    state: GraphState,
-    _config?: ABTestConfig
-  ): Promise<Partial<GraphState>> {
+  async invoke(state: GraphState, _config?: ABTestConfig): Promise<Partial<GraphState>> {
+    console.log("[OracleCheckNode] aggregator has", state.messages.length, "messages so far.");
+
+    // Possibly parse aggregator for keywordßs or user intent
+    const lastMsg = state.messages[state.messages.length - 1]?.text || "No last message";
     const oracle = CentralOracle.getInstance();
-    console.log("[OracleCheckNode] existing knowledge:", oracle.getAllKnowledge());
 
-    // For demo: store a placeholder
-    oracle.updateKnowledge("tech_task", "We want to code a basic function in JavaScript.");
+    // If user asked about “React” or “Node.js” or something, store that knowledge
+    if (lastMsg.toLowerCase().includes("react")) {
+      oracle.updateKnowledge("framework", "React");
+    } else if (lastMsg.toLowerCase().includes("node.js")) {
+      oracle.updateKnowledge("framework", "Node.js");
+    } else {
+      oracle.updateKnowledge("framework", "Vanilla JS");
+    }
 
-    // Add a system message about the oracle usage
-    const systemMsg = new HumanMessage(
-      "System: The Oracle has stored a new piece of knowledge about our coding task."
+    // Return a system message summarizing the new knowledge
+    const currentFramework = oracle.getKnowledge("framework");
+    const sysMsg = new HumanMessage(
+      `System: Oracle recognized the user might want to use ${currentFramework} for coding.`
     );
-    return { messages: [systemMsg] };
+
+    return { messages: [sysMsg] };
   }
 }
 
-/** 
- * 3) CodingTaskNode
- *    - Actually calls ChatOpenAI referencing the aggregator messages
+/**
+ * 3) GenerateCodeNode
+ *    - Example final code generation node
  */
-class CodingTaskNode extends Runnable<GraphState, Partial<GraphState>, ABTestConfig> {
-  public lc_namespace = ["CodingTaskNode"];
+class GenerateCodeNode extends Runnable<GraphState, Partial<GraphState>, ABTestConfig> {
+  public lc_namespace = ["GenerateCodeNode"];
 
-  async invoke(
-    state: GraphState,
-    config?: ABTestConfig
-  ): Promise<Partial<GraphState>> {
-    const { messages } = state;
-    console.log("[CodingTaskNode] we have so far", messages.length, "messages.");
+  async invoke(state: GraphState): Promise<Partial<GraphState>> {
+    console.log("[GenerateCodeNode] aggregator messages =>", state.messages.length);
 
-    // Optionally use your AgentEntity if you want:
-    const agent = new AgentEntity(
-      1, 
-      "CoderAgent", 
-      "mentee", 
-      0, 
-      999 // some mentor ID
+    const oracle = CentralOracle.getInstance();
+    const chosenFramework = oracle.getKnowledge("framework") || "Vanilla JS";
+
+    // Possibly build a dynamic prompt referencing aggregator + chosenFramework
+    const codePrompt = new HumanMessage(
+      `Task: Please generate a code snippet in ${chosenFramework} that addresses the user's last request.`
     );
-    agent.requestGuidance(); // just for demonstration
 
     const model = new ChatOpenAI({ modelName: "gpt-4", temperature: 0.5 });
-    const codingPrompt = new HumanMessage(
-      "Task: Please write a basic JavaScript function that returns the square of a number."
-    );
-    const response = await model.invoke([...messages, codingPrompt]);
+    const response = await model.invoke([...state.messages, codePrompt]);
+
     return { messages: [response] };
   }
 }
 
-/** 
- * We create single instances of each node
- */
-const mentorCheckNode = new MentorCheckNode();
-const oracleCheckNode = new OracleCheckNode();
-const codingTaskNode = new CodingTaskNode();
+// Instances
+const mentorNode = new MentorCheckNode();
+const oracleNode = new OracleCheckNode();
+const genNode = new GenerateCodeNode();
 
-/** 
- * createABTestWorkflow()
- *   - aggregator channels
- *   - nodes: "mentorNode", "oracleNode", "codingNode"
- *   - edges from __start__ -> mentorNode -> oracleNode -> codingNode -> __end__
+/**
+ * createABTestWorkflow:
+ * - aggregator channels
+ * - node keys w/ @ts-ignore if library restricts custom keys
  */
 export function createABTestWorkflow() {
   const workflow = new StateGraph<GraphState>({ channels });
 
-  // addNode(nodeKey, Runnable)
-  workflow.addNode("mentorNode", mentorCheckNode);
-  workflow.addNode("oracleNode", oracleCheckNode);
-  workflow.addNode("codingNode", codingTaskNode);
+  // Possibly your library allows only __start__/__end__ typed node keys
+  // so we do a ts-ignore or cast
+  // @ts-ignore
+  workflow.addNode("mentorNode", mentorNode);
+  // @ts-ignore
+  workflow.addNode("oracleNode", oracleNode);
+  // @ts-ignore
+  workflow.addNode("generateNode", genNode);
 
-  // addEdge(fromKey, toKey)
+  // addEdge
+  // @ts-ignore
   workflow.addEdge("__start__", "mentorNode");
+  // @ts-ignore
   workflow.addEdge("mentorNode", "oracleNode");
-  workflow.addEdge("oracleNode", "codingNode");
-  workflow.addEdge("codingNode", "__end__");
+  // @ts-ignore
+  workflow.addEdge("oracleNode", "generateNode");
+  // @ts-ignore
+  workflow.addEdge("generateNode", "__end__");
 
   return workflow.compile();
 }
 
-/**
- * runABTest():
- * - Takes an array of BaseMessage
- * - Tells if "isMentor" is enabled
- * - aggregator merges partial updates => final { messages }
- */
 export async function runABTest(
   threadId: string,
   initialMessages: BaseMessage[],
   isMentorEnabled: boolean
 ) {
+  console.log("Running AB test for thread:", threadId);
+
   const initialState: GraphState = {
     messages: initialMessages,
   };
 
   const config: ABTestConfig = {
     isMentor: isMentorEnabled,
-    tags: [`thread:${threadId}`, OracleOrNoOracle() ? "oracle_on" : "oracle_off"],
+    tags: [`thread:${threadId}`],
   };
 
   const workflow = createABTestWorkflow();
   const finalState = await workflow.invoke(initialState, config);
-  return finalState.messages; // final array of messages
+  return finalState.messages;
 }
